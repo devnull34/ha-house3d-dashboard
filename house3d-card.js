@@ -1,5 +1,5 @@
 /* house3d-card — 3D floor plan with live Home Assistant devices */
-const CARD_VERSION = '1.3.0';
+const CARD_VERSION = '1.3.1';
 const THREE_URLS = ['/local/house3d/three.module.min.js', 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js'];
 
 /* ---------- House geometry (traced from the Cubicasa plans, in plan pixels) ----------
@@ -257,10 +257,8 @@ class House3DCard extends HTMLElement {
   set hass(h) {
     this._hass = h;
     if (!this._wrap) return;
-    if (this._editBtn) this._editBtn.style.display = h.user?.is_admin ? '' : 'none';
-    const admin = !!h.user?.is_admin, adminChanged = admin !== this._admin;
-    this._admin = admin;
-    if (adminChanged) { if (!admin && this._edit) this._setEdit(false); else this._renderDrawer(); }
+    this._admin = true;
+    if (this._editBtn) this._editBtn.style.display = '';
     const sig = [h.entities, h.devices, h.areas, Object.keys(h.states).length].map((x) => (typeof x === 'object' ? x : String(x)));
     if (!this._sig || sig.some((x, i) => x !== this._sig[i])) { this._sig = sig; this._collect(); }
     this._sync();
@@ -282,7 +280,7 @@ class House3DCard extends HTMLElement {
       <canvas tabindex="0"></canvas><div class="ov"></div>
       <div class="top"><div class="title glass"><ha-icon icon="mdi:home-variant-outline" style="--mdc-icon-size:18px;color:var(--h3-accent)"></ha-icon><span class="tt"></span><small class="sub"></small></div>
         <div class="seg glass"></div><div class="sp"></div>
-        <button class="ib glass lst" title="Devices"><ha-icon icon="mdi:format-list-bulleted"></ha-icon></button><button class="ib glass edit" title="Move devices"><ha-icon icon="mdi:cursor-move"></ha-icon></button><button class="ib glass reset" title="Reset view"><ha-icon icon="mdi:crosshairs-gps"></ha-icon></button></div>
+        <button class="ib glass lst" title="Devices"><ha-icon icon="mdi:format-list-bulleted"></ha-icon></button><button class="ib glass edit" title="Move devices"><ha-icon icon="mdi:cursor-move"></ha-icon></button><button class="ib glass reset" title="Reset camera"><ha-icon icon="mdi:compass-outline"></ha-icon></button></div>
       <div class="ebar glass"><span>Drag devices anywhere on their floor · drop into a room to reassign · right-click resets</span><button class="sv">Save</button><button class="cn">Cancel</button></div>
       <div class="drw glass"><div class="hd"><span>Devices</span><span class="sp"></span><button class="ib x" title="Close"><ha-icon icon="mdi:close"></ha-icon></button></div>
         <input class="q" type="search" placeholder="Search name, entity_id or room…" autocomplete="off" spellcheck="false">
@@ -708,11 +706,22 @@ class House3DCard extends HTMLElement {
       const d = document.createElement('div'); d.className = 'm'; d.style.opacity = 0;
       d.innerHTML = `<div class="d"><${icon}></${icon}></div><div class="v"></div>`;
       let timer, long = false;
-      d.addEventListener('pointerdown', (ev) => { if (this._edit) return this._dragStart(m, ev); long = false; timer = setTimeout(() => { long = true; this._more(e.eid); }, 500); });
+      d.addEventListener('pointerdown', (ev) => {
+        if (ev.button === 2) return;
+        this._dragStart(m, ev, () => { clearTimeout(timer); long = true; });
+        long = false;
+        timer = setTimeout(() => { long = true; this._more(e.eid); }, 500);
+      });
       d.addEventListener('pointerup', () => clearTimeout(timer));
       d.addEventListener('pointerleave', () => { clearTimeout(timer); this._hideTip(); });
-      d.addEventListener('click', (ev) => { ev.stopPropagation(); if (long || this._edit) return; if (TOGGLE.has(e.dom) && this._cfg.tap_action !== 'more-info') this._hass.callService(e.dom === 'humidifier' ? 'humidifier' : 'homeassistant', 'toggle', { entity_id: e.eid }); else this._more(e.eid); });
-      d.addEventListener('contextmenu', (ev) => { ev.preventDefault(); if (this._edit) { this._resetPos(e.eid); return; } this._more(e.eid); });
+      d.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (long || this._dragged) { this._dragged = false; return; }
+        if (TOGGLE.has(e.dom) && this._cfg.tap_action !== 'more-info')
+          this._hass.callService(e.dom === 'humidifier' ? 'humidifier' : 'homeassistant', 'toggle', { entity_id: e.eid });
+        else this._more(e.eid);
+      });
+      d.addEventListener('contextmenu', (ev) => { ev.preventDefault(); this._resetPos(e.eid); });
       d.addEventListener('pointerenter', () => { if (!this._edit) this._showTip(e, d); });
       this._ov.appendChild(d);
       const F = this._floors[e.floor];
@@ -732,7 +741,6 @@ class House3DCard extends HTMLElement {
   // live to a working copy in this._cfg and only written to the dashboard (and HA's entity registry) on Save.
   _setEdit(on, keep = false) {
     on = !!on;
-    if (on && !this._admin) return;
     if (on && !this._edit) {
       this._snap = { entities: clone(this._cfg.entities || {}), exclude: [...(this._cfg.exclude || [])] };
       this._cfg = { ...this._cfg, entities: clone(this._snap.entities), exclude: [...this._snap.exclude] };
@@ -882,19 +890,24 @@ class House3DCard extends HTMLElement {
 
   _roomAt(fid, x, z) { return Object.values(this._rooms).find((R) => R.floor === fid && inside(R.poly, x, z)) || null; }
 
-  _dragStart(m, ev) {
-    ev.preventDefault(); ev.stopPropagation();
+  _dragStart(m, ev, onMoved) {
     if (ev.button === 2) return;
     const T = this.T, el = m.el, fid = m.e.floor, F = this._floors[fid];
     const fr = Object.values(this._rooms).filter((R) => R.floor === fid);
     const lim = [Math.min(...fr.map((R) => R.bb[0])) - 1.5, Math.min(...fr.map((R) => R.bb[1])) - 1.5, Math.max(...fr.map((R) => R.bb[2])) + 1.5, Math.max(...fr.map((R) => R.bb[3])) + 1.5];
-    el.setPointerCapture(ev.pointerId); el.classList.add('drag');
     const plane = new T.Plane(new T.Vector3(0, 1, 0), -(F.y + m.p.y)), rc = new T.Raycaster(), hit = new T.Vector3();
     const x0 = ev.clientX, y0 = ev.clientY, name = this._hass.states[m.e.eid]?.attributes.friendly_name || m.e.eid;
     let moved = false, over = this._rooms[m.e.room] || null;
     const move = (e) => {
       if (!moved && Math.hypot(e.clientX - x0, e.clientY - y0) < 4) return;
-      moved = true;
+      if (!moved) {
+        moved = true;
+        this._dragged = true;
+        if (onMoved) onMoved();
+        this._ensureEdit();
+        el.setPointerCapture(ev.pointerId);
+        el.classList.add('drag');
+      }
       const rect = this._canvas.getBoundingClientRect();
       rc.setFromCamera(new T.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), this._cam);
       if (!rc.ray.intersectPlane(plane, hit)) return;
@@ -1050,6 +1063,8 @@ class House3DCard extends HTMLElement {
     m.el.classList.remove('ping'); void m.el.offsetWidth; m.el.classList.add('ping');
     clearTimeout(m.pingT); m.pingT = setTimeout(() => m.el.classList.remove('ping'), 3000);
     this._pulse(m);
+    this._ensureEdit();
+    this._toggleDrawer(false);
     return true;
   }
 

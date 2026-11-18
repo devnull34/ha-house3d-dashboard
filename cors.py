@@ -6,4 +6,4 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Private-Network','true')
         self.send_header('Cache-Control','no-store')
         super().end_headers()
-http.server.ThreadingHTTPServer(('127.0.0.1',8766),H).serve_forever()
+http.server.ThreadingHTTPServer(('0.0.0.0',8766),H).serve_forever()
