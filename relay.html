@@ -1,0 +1,3 @@
+<!doctype html><script>
+fetch('house3d-card.js?' + Date.now()).then((r) => r.text()).then((t) => parent.postMessage({ house3d: t }, 'http://homeassistant.home.arpa:8123'));
+</script>
